@@ -15,8 +15,7 @@ from botocore.config import Config
 
 # date differential function
 def diff_dates(strDate1, strDate2):
-    intSecs = float(strDate2)-float(strDate1)
-    return intSecs
+    return float(strDate2)-float(strDate1)
 
 # dynamoDB function
 def update_ddb(objTable, strArn, strUpdate, now, intHours):
@@ -30,7 +29,7 @@ def update_ddb(objTable, strArn, strUpdate, now, intHours):
     )
 
 # aws.health affected accounts
-def get_healthAccounts (awshealth, event, strArn, awsRegion):
+def get_healthAccounts(awshealth, event, strArn, awsRegion):
     affectedAccounts = []
     event_accounts_paginator = awshealth.get_paginator('describe_affected_accounts_for_organization')
     event_accounts_page_iterator = event_accounts_paginator.paginate(
@@ -39,11 +38,11 @@ def get_healthAccounts (awshealth, event, strArn, awsRegion):
     for event_accounts_page in event_accounts_page_iterator:
         json_event_accounts = json.dumps(event_accounts_page, cls=DatetimeEncoder)
         parsed_event_accounts = json.loads (json_event_accounts)
-        affectedAccounts = affectedAccounts + (parsed_event_accounts['affectedAccounts'])
+        affectedAccounts += parsed_event_accounts['affectedAccounts']
     return affectedAccounts
         
 # aws.health affected entities (aka resources)
-def get_healthEntities (awshealth, event, strArn, awsRegion, affectedAccounts):
+def get_healthEntities(awshealth, event, strArn, awsRegion, affectedAccounts):
     if len(affectedAccounts) >= 1:
         affectedAccounts = affectedAccounts[0]
         event_entities_paginator = awshealth.get_paginator('describe_affected_entities_for_organization')
@@ -61,10 +60,10 @@ def get_healthEntities (awshealth, event, strArn, awsRegion, affectedAccounts):
             parsed_event_entities = json.loads (json_event_entities)
             for entity in parsed_event_entities['entities']:
                 affectedEntities.append(entity['entityValue'])
-        return affectedEntities
     else:
         affectedEntities = ['All resources\nin region']
-        return affectedEntities
+
+    return affectedEntities
     
 # aws.health message for slack  
 def get_healthUpdates(awshealth, event, strArn, awsRegion, affectedAccounts):
@@ -78,19 +77,16 @@ def get_healthUpdates(awshealth, event, strArn, awsRegion, affectedAccounts):
             }
           ]
         )
-        json_event_details = json.dumps(event_details, cls=DatetimeEncoder)
-        parsed_event_details = json.loads (json_event_details)
-        healthUpdates = (parsed_event_details['successfulSet'][0]['eventDescription']['latestDescription'])
-        return healthUpdates
-    # needed for Service Health Dashboard issues
     else:
         event_details = awshealth.describe_event_details (
             eventArns=[strArn]
         )
-        json_event_details = json.dumps(event_details, cls=DatetimeEncoder)
-        parsed_event_details = json.loads (json_event_details)
-        healthUpdates = (parsed_event_details['successfulSet'][0]['eventDescription']['latestDescription'])
-        return healthUpdates
+
+    json_event_details = json.dumps(event_details, cls=DatetimeEncoder)
+    parsed_event_details = json.loads (json_event_details)
+    return parsed_event_details['successfulSet'][0]['eventDescription'][
+        'latestDescription'
+    ]
 
 # send to slack function
 def send_webhook(updatedOn, strStartTime, strEndTime, event, awsRegion, decodedWebHook, healthUpdates, affectedAccounts, affectedEntities):
@@ -147,15 +143,15 @@ def lambda_handler(event, context):
     encryptedWebHook = os.environ['encryptedWebHook']
     ddbTable = os.environ['ddbTable']
     awsRegion = os.environ['AWS_DEFAULT_REGION']
-    
+
     if dictRegions != "":
         dictRegions = dictRegions.replace("'","")
         dictRegions = list(dictRegions.split(",")) 
-    
+
     # set standard date time format used throughout
     strDTMFormat2 = "%Y-%m-%d %H:%M:%S"
     strDTMFormat = '%s'
-        
+
     config = Config(
         retries = dict(
             max_attempts = 10 # org view apis have a lower tps than the single
@@ -168,20 +164,17 @@ def lambda_handler(event, context):
     dynamodb = boto3.resource("dynamodb")
     kms = boto3.client('kms')
     print("boto3 version:"+boto3.__version__)
-    
+
     response = kms.decrypt(CiphertextBlob=b64decode(encryptedWebHook))['Plaintext']
     string_response = response.decode('ascii')
     decodedWebHook = "https://" + string_response
 
     HealthIssuesTable = dynamodb.Table(ddbTable)
 
-    if dictRegions != "":
-        strFilter = {
+    strFilter = {
                 'regions':
                     dictRegions
-    	}
-    else:
-        strFilter = {}
+    	} if dictRegions != "" else {}
     event_paginator = awshealth.get_paginator('describe_events_for_organization')
     event_page_iterator = event_paginator.paginate(filter=strFilter)
     for response in event_page_iterator:
@@ -190,7 +183,7 @@ def lambda_handler(event, context):
 
         events = json_events.get('events')
         print("Event received: ", json.dumps(events))
-        for event in events :
+        for event in events:
             strEventTypeCode = event['eventTypeCode']
             strArn = (event['arn'])
             # configure times
@@ -204,19 +197,19 @@ def lambda_handler(event, context):
                 strEndTime = strEndTime.strftime(strDTMFormat2)
             else:
                 strEndTime = "None given"
-            
+
             if diff_dates(strUpdate, now) < int(intHours):
                 try:
-                    response = HealthIssuesTable.get_item(
-                        Key = {
-                            'arn' : strArn
-                        }
-                )
+                        response = HealthIssuesTable.get_item(
+                            Key = {
+                                'arn' : strArn
+                            }
+                    )
                 except ClientError as e:
                     print(e.response['Error']['Message'])
                 else:
                     isItemResponse = response.get('Item')
-                    if isItemResponse == None:
+                    if isItemResponse is None:
                         print (datetime.now().strftime(strDTMFormat2)+": record not found")
                         update_ddb(HealthIssuesTable, strArn, strUpdate, now, intHours)
                         affectedAccounts = get_healthAccounts (awshealth, event, strArn, awsRegion)
